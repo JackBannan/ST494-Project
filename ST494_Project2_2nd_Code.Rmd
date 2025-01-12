@@ -1,0 +1,244 @@
+---
+title: "ST494Project2"
+output: html_document
+date: "2024-04-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(MASS)
+library(randomForest)
+library(caret) 
+library(dplyr)
+library(zoo)
+library(nnet)
+```
+
+
+```{r}
+## Load the dataset
+Football <- read.csv('past-data.csv')
+#Football <- read.csv("past-data.csv")
+Football
+
+Football_Complete <- na.omit(Football)
+Football_Complete
+
+#unique_values <- unique(Football_Complete$Div)
+#unique_count <- length(unique_values)
+
+#print(unique_count)
+
+#cat("Unique values: ", paste(unique_values, collapse = ", "), "\n")
+
+Football_Eng <- filter(Football_Complete, Div == "Premier League")
+Football_Eng
+
+Football_Ger <- filter(Football_Complete, Div == "Bundesliga")
+Football_Ger
+
+Football_Ita <- filter(Football_Complete, Div == "Serie A")
+Football_Ita
+
+Football_Fra <- filter(Football_Complete, Div == "Ligue 1")
+Football_Fra
+
+Football_Spa <- filter(Football_Complete, Div == "Laliga")
+Football_Spa
+
+#Football_Complete <- select(Football_Complete, -Time)
+
+#write.csv(Football_Complete, 'C:/Users/Chris/Downloads/cleaned_Football_Complete.csv', row.names = FALSE)
+```
+```{r}
+head(Football_Complete$Date)
+Football_Complete$Date <- as.Date(Football_Complete$Date, format = "%d/%m/%Y")
+
+```
+
+```{r}
+# Assuming 'Football_Complete' is already loaded and cleaned
+
+# Calculate Goal Differences
+Football_Complete <- Football_Complete %>%
+  mutate(HTGDIFF = FTHG - FTAG, ATGDIFF = FTAG - FTHG)
+
+# Calculate Rolling Averages for Home and Away Goal Differences
+Football_Complete <- Football_Complete %>%
+  arrange(Date, HomeTeam) %>%
+  group_by(HomeTeam) %>%
+  mutate(AVG_HTGDIFF = zoo::rollapply(HTGDIFF, 10, mean, fill = NA, align = "right")) %>%
+  ungroup() %>%
+  arrange(Date, AwayTeam) %>%
+  group_by(AwayTeam) %>%
+  mutate(AVG_ATGDIFF = zoo::rollapply(ATGDIFF, 10, mean, fill = NA, align = "right")) %>%
+  ungroup()
+
+# Calculate Rolling Averages for Home and Away Team Shots on Target
+Football_Complete <- Football_Complete %>%
+  arrange(Date, HomeTeam) %>%
+  group_by(HomeTeam) %>%
+  mutate(AVG_HST = rollmean(HST, 10, fill = NA, align = "right")) %>%
+  ungroup() %>%
+  arrange(Date, AwayTeam) %>%
+  group_by(AwayTeam) %>%
+  mutate(AVG_AST = rollmean(AST, 10, fill = NA, align = "right")) %>%
+  ungroup()
+```
+
+```{r}
+for (div in unique_values) {
+  cat("Processing Division:", div, "\n")
+  
+  Football_Div <- na.omit(Football_Complete)
+  Football_Div <- filter(Football_Div, Div == div)
+  
+  Football_Div$FTHG[is.na(Football_Div$FTHG)] <- mean(Football_Div$FTHG, na.rm = TRUE)
+  Football_Div$FTAG[is.na(Football_Div$FTAG)] <- mean(Football_Div$FTAG, na.rm = TRUE)
+  
+  Football_Div$FTR[is.na(Football_Div$FTR)] <- 'Unknown'  # Or use the mode, etc.
+
+  set.seed(123)  # Set a seed for reproducibility
+  trainIndex <- createDataPartition(Football_Div$FTR, p = 0.8, list = FALSE)
+  trainData <- Football_Div[trainIndex, ]
+  testData <- Football_Div[-trainIndex, ]
+
+  trainData$FTR <- as.factor(trainData$FTR)
+  testData$FTR <- as.factor(testData$FTR)
+
+  # Update the formula to include new features
+  rf_model <- randomForest(FTR ~ AVG_HTGDIFF + AVG_ATGDIFF + AVG_HST + AVG_AST,
+                           data = trainData, 
+                           ntree = 1000, 
+                           proximity = TRUE,
+                           na.action = na.omit)  # or use na.roughfix
+
+  
+  #models[[div]] <- rf_model
+  
+  # Print model summary
+  print(rf_model)
+  
+  predictions <- predict(rf_model, newdata = testData)
+  print(confusionMatrix(predictions, testData$FTR))
+}
+```
+```{r}
+rf_model
+```
+```{r}
+# Assuming 'rf_model' is already trained using randomForest
+# Extract OOB error rates for overall and for each class present in FTR
+class_labels <- levels(trainData$FTR)  # Use the training data's FTR column to get the outcome classes
+
+# Check if the class labels exist in the err.rate matrix
+existing_labels <- class_labels[class_labels %in% colnames(rf_model$err.rate)]
+
+# Prepare data frame for plotting, include only existing labels in the error rate matrix
+oob.error.data <- data.frame(
+  Trees = rep(1:nrow(rf_model$err.rate), times = length(existing_labels) + 1),
+  Type = rep(c("OOB", existing_labels), each = nrow(rf_model$err.rate)),
+  ErrorRate = c(rf_model$err.rate[, "OOB"],
+                sapply(existing_labels, function(cl) rf_model$err.rate[, cl]))
+)
+
+# Plot the error rates using ggplot2
+ggplot(oob.error.data, aes(x = Trees, y = ErrorRate, color = Type)) +
+  geom_line() +
+  labs(y = "Error Rate", x = "Number of Trees", title = "OOB Error Rates Over Trees") +
+  theme_minimal()
+
+```
+```{r}
+varImpPlot(rf_model)
+```
+  
+```{r}
+oob.values <- vector(length=10)  # Initialize a vector to store OOB error rates
+trainData <- na.omit(trainData)
+# For numerical columns
+trainData$AVG_HTGDIFF[is.na(trainData$AVG_HTGDIFF)] <- mean(trainData$AVG_HTGDIFF, na.rm = TRUE)
+trainData$AVG_ATGDIFF[is.na(trainData$AVG_ATGDIFF)] <- mean(trainData$AVG_ATGDIFF, na.rm = TRUE)
+trainData$AVG_HST[is.na(trainData$AVG_HST)] <- mean(trainData$AVG_HST, na.rm = TRUE)
+trainData$AVG_AST[is.na(trainData$AVG_AST)] <- mean(trainData$AVG_AST, na.rm = TRUE)
+
+for(i in 1:10) {
+  # Train a Random Forest model with a different seed each time
+  set.seed(i)
+  temp.model <- randomForest(FTR ~ AVG_HTGDIFF + AVG_ATGDIFF + AVG_HST + AVG_AST, data=trainData, ntree=1000)
+  
+  # Extract the OOB error rate from the model and store it in the vector
+  oob.values[i] <- temp.model$err.rate[nrow(temp.model$err.rate), "OOB"]
+}
+
+# Display the collected OOB error rates
+oob.values
+
+```
+```{r}
+# After making predictions
+predictions <- predict(rf_model, newdata = testData)
+predictions
+
+```
+
+```{r}
+# Assuming 'predictions' contains your model's predictions and 'testData$FTR' contains the actual outcomes
+
+# Create a data frame to compare predictions with actual outcomes
+results_comparison <- data.frame(
+  Actual = testData$FTR,
+  Predicted = predictions
+)
+
+# Filter out NA values from predictions
+results_comparison <- na.omit(results_comparison)
+
+# Calculate overall accuracy
+overall_accuracy <- mean(results_comparison$Actual == results_comparison$Predicted)
+
+# Calculate shares for wins, draws, and losses
+correct_wins <- sum(results_comparison$Actual == "H" & results_comparison$Predicted == "H")
+total_wins <- sum(results_comparison$Actual == "H")
+share_wins <- correct_wins / total_wins
+
+correct_draws <- sum(results_comparison$Actual == "D" & results_comparison$Predicted == "D")
+total_draws <- sum(results_comparison$Actual == "D")
+share_draws <- correct_draws / total_draws
+
+correct_losses <- sum(results_comparison$Actual == "A" & results_comparison$Predicted == "A")
+total_losses <- sum(results_comparison$Actual == "A")
+share_losses <- correct_losses / total_losses
+
+# Print the results
+cat("Correct Prediction Total:", sprintf("%.2f%%", overall_accuracy * 100), "\n")
+cat("Correct Prediction Share Wins:", sprintf("%.2f%%", share_wins * 100), "\n")
+cat("Correct Prediction Share Draws:", sprintf("%.2f%%", share_draws * 100), "\n")
+cat("Correct Prediction Share Losses:", sprintf("%.2f%%", share_losses * 100), "\n")
+
+```
+
+```{r}
+#logistic regression model
+
+
+Football_Eng$FTR <- ifelse(Football_Eng$FTR == "H", 3,
+                                     ifelse(Football_Eng$FTR == "D", 1, 0))
+
+df[] <- lapply(df, function(x) if(is.character(x)) as.factor(x) else x)
+
+Football_Eng
+
+log_reg_model <- multinom(FTR ~ ., data = Football_Eng)
+
+summary(log_reg_model)
+
+final_model <- step(log_reg_model, direction = "backward")
+
+summary(final_model)
+
+
+```
+
+

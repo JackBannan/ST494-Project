@@ -1,0 +1,226 @@
+---
+title: "ST494Project2"
+output: html_document
+date: "2024-04-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+if (!require(MASS)) install.packages('MASS', dependencies = TRUE) 
+library(MASS)
+if (!require(car)) install.packages('car', dependencies = TRUE) 
+library(car)
+if (!require(leaps)) install.packages('leaps', dependencies = TRUE)
+library(leaps)
+```
+
+
+```{r}
+Football <- read.csv("past-data.csv")
+Football
+
+Football_Complete <- na.omit(Football)
+Football_Complete
+
+unique_values <- unique(Football_Complete$Div)
+unique_count <- length(unique_values)
+
+print(unique_count)
+
+cat("Unique values: ", paste(unique_values, collapse = ", "), "\n")
+```
+
+
+```{r}
+Football_Eng <- filter(Football_Complete, Div == "Premier League")
+Football_Eng
+
+Football_Ger <- filter(Football_Complete, Div == "Bundesliga")
+Football_Ger
+
+Football_Ita <- filter(Football_Complete, Div == "Serie A")
+Football_Ita
+
+Football_Fra <- filter(Football_Complete, Div == "Ligue 1")
+Football_Fra
+
+Football_Spa <- filter(Football_Complete, Div == "LaLiga")
+Football_Spa
+
+```
+
+
+
+
+```{r}
+#logistic regression model
+
+library(nnet)
+
+
+Football_Eng$FTR <- ifelse(Football_Eng$FTR == "H", 3,
+                                     ifelse(Football_Eng$FTR == "D", 1, 0))
+
+Football_Eng[] <- lapply(Football_Eng, function(x) if(is.character(x)) as.factor(x) else x)
+
+Football_Eng
+
+Football_Eng$FTR <- factor(Football_Eng$FTR, levels = c(0, 1, 3))  
+
+Football_Eng
+
+Football_Eng <- Football_Eng[, !names(Football_Eng) %in% "Div"]
+
+Football_Eng
+
+table(Football_Eng$FTR)
+
+set.seed(123)  
+trainIndex <- createDataPartition(Football_Eng$FTR, p = 0.8, list = FALSE)
+trainData <- Football_Eng[trainIndex, ]
+testData <- Football_Eng[-trainIndex, ]
+
+trainData
+testData
+
+```
+
+```{r}
+trainData <- trainData[, !(names(trainData) %in% c("Date", "Time","FTHG","FTAG","HTHG","HTAG"))]
+testData <- testData[, !(names(testData) %in% c("Date", "Time","FTHG","FTAG","HTHG","HTAG"))]
+
+```
+
+```{r}
+#PCA
+
+double_columns <- sapply(Football_Eng, is.double)
+
+Football_Eng2 <- Football_Eng[, double_columns]
+
+Football_Eng2
+
+scaled_data <- sklearn.preprocessing.scale(Football_Eng2)
+
+Football_Eng2
+
+pca_result <- prcomp(scaled_data)
+
+summary(pca_result)
+
+plot(pca_result, type = "l", main = "Variance Explained by Principal Components")
+
+biplot(pca_result, scale = 0)
+```
+
+
+```{r}
+
+library(psych)
+
+
+pairs(trainData)
+
+```
+
+
+```{r}
+# Load the required library
+library(glmnet)
+
+
+# Fit multinomial logistic regression model with LASSO regularization
+#lasso_model <- cv.glmnet(as.matrix(trainData[, -ncol(trainData)]), 
+ #                        as.factor(trainData$FTR), 
+  #                       family = "multinomial")
+
+# Print selected features with non-zero coefficients
+#selected_features <- coef(lasso_model, s = "lambda.min")[-1] != 0
+#print(names(selected_features[selected_features]))
+
+```
+```{r}
+log_reg_model <- multinom(FTR ~ ., data = trainData)
+formula(log_reg_model)
+#summary(log_reg_model)
+
+```
+
+
+```{r}
+summary_model<-summary(log_reg_model)
+#summary_model
+
+data.frame(
+  Adj.R2 = which.max(summary_model$adjr2),
+  CP = which.min(trainData$cp),
+  BIC = which.min(trainData$bic)
+)
+```
+
+```{r}
+# Example: Calculate correlation coefficients between numeric variables in a dataset
+correlation_matrix <- cor(Football_Eng2[, -ncol(Football_Eng2)])
+
+# Print correlation matrix
+print(correlation_matrix)
+
+```
+
+
+```{r}
+#regsub <- regsubsets(FTR ~ ., data = trainData, method = "backward")
+final_model <- step(log_reg_model, direction = "backward")
+
+#summary(final_model)
+```
+
+```{r}
+formula(final_model)
+```
+
+
+```{r}
+predictions <- predict(final_model, newdata = testData)
+predictions
+```
+
+```{r}
+# Create a data frame to compare predictions with actual outcomes
+results_comparison <- data.frame(
+  Actual = testData$FTR,
+  Predicted = predictions
+)
+
+# Filter out NA values from predictions
+results_comparison <- na.omit(results_comparison)
+
+# Calculate overall accuracy
+overall_accuracy <- mean(results_comparison$Actual == results_comparison$Predicted)
+
+# Calculate shares for wins, draws, and losses
+correct_wins <- sum(results_comparison$Actual == 3 & results_comparison$Predicted == 3)
+total_wins <- sum(results_comparison$Actual == 3)
+share_wins <- correct_wins / total_wins
+
+correct_draws <- sum(results_comparison$Actual == 1 & results_comparison$Predicted == 1)
+total_draws <- sum(results_comparison$Actual == 1)
+share_draws <- correct_draws / total_draws
+
+correct_losses <- sum(results_comparison$Actual == 0 & results_comparison$Predicted == 0)
+total_losses <- sum(results_comparison$Actual == 0)
+share_losses <- correct_losses / total_losses
+
+# Print the results
+cat("Correct Prediction Total:", sprintf("%.2f%%", overall_accuracy * 100), "\n")
+cat("Correct Prediction Share Wins:", sprintf("%.2f%%", share_wins * 100), "\n")
+cat("Correct Prediction Share Draws:", sprintf("%.2f%%", share_draws * 100), "\n")
+cat("Correct Prediction Share Losses:", sprintf("%.2f%%", share_losses * 100), "\n")
+
+confusionMatrix(predictions, testData$FTR)
+```
+
